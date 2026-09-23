@@ -1,78 +1,61 @@
-from flask import Flask, render_template_string, request, redirect
+import streamlit as st
+import pandas as pd
 import qrcode
-import os
-from datetime import datetime
-import sqlite3
+from io import BytesIO
+import datetime
 
-app = Flask(__name__)
+st.set_page_config(page_title="Student Attendance System", layout="centered")
+st.title("📚 Student Attendance Management System")
+st.markdown("---")
 
-# Database setup
-def init_db():
-    conn = sqlite3.connect('attendance.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS students 
-                 (id INTEGER PRIMARY KEY, name TEXT, roll_no TEXT, qr_code TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS attendance 
-                 (id INTEGER PRIMARY KEY, roll_no TEXT, date TEXT, status TEXT)''')
-    conn.commit()
-    conn.close()
+# Sidebar
+menu = st.sidebar.selectbox("Menu", ["Mark Attendance", "Add Student", "View Records"])
 
-init_db()
+if 'students' not in st.session_state:
+    st.session_state.students = pd.DataFrame(columns=["ID", "Name", "Department"])
+if 'attendance' not in st.session_state:
+    st.session_state.attendance = pd.DataFrame(columns=["ID", "Name", "Date", "Time", "Status"])
 
-# Home Page
-HTML_PAGE = """
-<h1>🎓 QR Student Attendance System</h1>
-<h3>Add Student</h3>
-<form method="POST" action="/add">
-Name: <input name="name" required> Roll No: <input name="roll" required>
-<button type="submit">Add & Generate QR</button>
-</form>
-<hr>
-<h3>Mark Attendance</h3>
-<form method="POST" action="/mark">
-Roll No: <input name="roll_no" required>
-<button type="submit">Mark Present</button>
-</form>
-<hr>
-<h3>Today's Attendance</h3>
-{{data}}
-"""
+if menu == "Add Student":
+    st.header("Add New Student")
+    s_id = st.text_input("Student ID")
+    s_name = st.text_input("Student Name")
+    s_dept = st.text_input("Department")
+    if st.button("Add Student"):
+        if s_id and s_name:
+            new = pd.DataFrame([[s_id, s_name, s_dept]], columns=["ID", "Name", "Department"])
+            st.session_state.students = pd.concat([st.session_state.students, new], ignore_index=True)
+            st.success(f"Student {s_name} Added!")
 
-@app.route('/')
-def home():
-    conn = sqlite3.connect('attendance.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM attendance WHERE date=?", (datetime.now().strftime("%Y-%m-%d"),))
-    rows = c.fetchall()
-    conn.close()
-    return render_template_string(HTML_PAGE, data=rows)
+            # Generate QR
+            qr = qrcode.make(s_id)
+            buf = BytesIO()
+            qr.save(buf)
+            st.image(buf, caption=f"QR Code for {s_id}")
+        else:
+            st.error("Please fill all fields")
 
-@app.route('/add', methods=['POST'])
-def add_student():
-    name = request.form['name']
-    roll = request.form['roll']
-    # Generate QR
-    img = qrcode.make(roll)
-    os.makedirs("qr_codes", exist_ok=True)
-    img.save(f"qr_codes/{roll}.png")
-    
-    conn = sqlite3.connect('attendance.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO students (name, roll_no, qr_code) VALUES (?,?,?)", (name, roll, f"{roll}.png"))
-    conn.commit()
-    conn.close()
-    return redirect('/')
+elif menu == "Mark Attendance":
+    st.header("Mark Attendance")
+    s_id = st.text_input("Enter Student ID / Scan QR")
+    if st.button("Mark Present"):
+        student = st.session_state.students[st.session_state.students["ID"] == s_id]
+        if not student.empty:
+            name = student.iloc[0]["Name"]
+            now = datetime.datetime.now()
+            new_att = pd.DataFrame([[s_id, name, now.date(), now.time(), "Present"]],
+                                   columns=["ID", "Name", "Date", "Time", "Status"])
+            st.session_state.attendance = pd.concat([st.session_state.attendance, new_att], ignore_index=True)
+            st.success(f"Attendance Marked for {name}!")
+        else:
+            st.error("Student not found! Please Add Student first.")
 
-@app.route('/mark', methods=['POST'])
-def mark():
-    roll = request.form['roll_no']
-    date = datetime.now().strftime("%Y-%m-%d")
-    conn = sqlite3.connect('attendance.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO attendance (roll_no, date, status) VALUES (?,?,?)", (roll, date, "Present"))
-    conn.commit()
-    conn.close()
-    return redirect('/')
-
-if __name__ == '__main__':
-    app.run(debug=True)
+elif menu == "View Records":
+    st.header("All Records")
+    st.subheader("Students List")
+    st.dataframe(st.session_state.students)
+    st.subheader("Attendance Records")
+    st.dataframe(st.session_state.attendance)
+    if not st.session_state.attendance.empty:
+        csv = st.session_state.attendance.to_csv(index=False).encode('utf-8')
+        st.download_button("Download Attendance CSV", csv, "attendance.csv", "text/csv")
